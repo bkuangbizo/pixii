@@ -231,38 +231,40 @@ trait TableOperations[K,  V] { self: Table[V] =>
       .withRequestItems(mutable.Map(tableName -> requests))
     )
 
-    def nextSubmission(unprocessed: java.util.List[WriteRequest], remaining: Iterator[WriteOperation[K, V]]) = {
-      val toAppend = remaining.take(25 - unprocessed.size).collect {
-        case WriteOperation.Put(value) =>
-          new WriteRequest().withPutRequest(new PutRequest().withItem(itemMapper(value)))
-        case WriteOperation.Delete(key) =>
-          new WriteRequest().withDeleteRequest(new DeleteRequest().withKey(toKey(key)))
-      }.toSeq
-      requests.clear()
-      requests.addAll(unprocessed)
-      requests.addAll(toAppend)
-      val response = dynamoDB.batchWriteItem(request)
-      val unprocessedItems = Option(response.getUnprocessedItems()) flatMap (m => Option(m.get(tableName)))
-      if (unprocessedItems.isEmpty) {
-        (requests.size, java.util.Collections.emptyList[WriteRequest](), remaining drop toAppend.size)
-      } else
-        (requests.size - unprocessedItems.get.size, unprocessedItems.get, remaining drop toAppend.size)
-    }
-
     new WriteSequence {
 
-      private var pending = operations
-      private var unprocessed = java.util.Collections.emptyList[WriteRequest]()
+      private var pendingOperations = operations
+      private var unprocessedOperations = java.util.Collections.emptyList[WriteRequest]()
       var completedOperations = 0
-      override def hasRemainingOperations = pending.nonEmpty || !unprocessed.isEmpty
+
+      override def hasRemainingOperations = pendingOperations.nonEmpty || !unprocessedOperations.isEmpty
       override def submitMoreOperations() = {
         if (!hasRemainingOperations) throw new NoSuchElementException
+
+        val newOperations = pendingOperations.take(25 - unprocessedOperations.size).collect {
+          case WriteOperation.Put(value) =>
+            new WriteRequest().withPutRequest(new PutRequest().withItem(itemMapper(value)))
+          case WriteOperation.Delete(key) =>
+            new WriteRequest().withDeleteRequest(new DeleteRequest().withKey(toKey(key)))
+        }.toSeq
+        requests.clear()
+        requests.addAll(unprocessedOperations)
+        requests.addAll(newOperations)               // requests.size should be 25
+
         retryPolicy.retry("Table(%s).writeAll" format tableName) {
-          val (written, stillUnprocessed, stillPending) = nextSubmission(unprocessed, pending)
-          completedOperations += written
-          unprocessed = stillUnprocessed
-          pending = stillPending
-          written
+          val response = dynamoDB.batchWriteItem(request)
+          val unprocessedItems = Option(response.getUnprocessedItems()) flatMap (m => Option(m.get(tableName)))
+          if (unprocessedItems.isEmpty) {
+            completedOperations += requests.size
+            unprocessedOperations = java.util.Collections.emptyList[WriteRequest]()
+            pendingOperations = pendingOperations drop newOperations.size
+            requests.size
+          } else {
+            completedOperations += requests.size - unprocessedItems.get.size
+            unprocessedOperations = unprocessedItems.get
+            pendingOperations = pendingOperations drop newOperations.size
+            request.size - unprocessedItems.get.size
+          }
         }
       }
 
