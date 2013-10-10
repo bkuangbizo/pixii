@@ -216,7 +216,6 @@ trait TableOperations[K,  V] { self: Table[V] =>
   }
 
   def deleteAll(keys: Iterator[K]): WriteSequence = {
-    val value = keys map (WriteOperation.Delete[K, V](_))
     writeAll(keys map (WriteOperation.Delete[K, V](_)))
   }
 
