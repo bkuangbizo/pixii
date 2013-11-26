@@ -76,13 +76,8 @@ trait TableOperations[K,  V] { self: Table[V] =>
 
   /** Update an item */
   def update(key: K, attributeUpdates: Map[String, AttributeValueUpdate]): Unit = {
-    retryPolicy.retry("Table(%s).update(%s)" format (tableName, key)) {
-      val request = (new UpdateItemRequest()
-        .withTableName(tableName)
-        .withKey(toKey(key))
-        .withAttributeUpdates(attributeUpdates))
-      dynamoDB.updateItem(request)
-    }
+    val allNewAttributes = updateAndReturnValues(key, attributeUpdates, ReturnValue.ALL_NEW)
+    if (allNewAttributes.isEmpty) delete(key)
   }
 
   def updateAndReturnValues(key: K, attributeUpdates: Map[String, AttributeValueUpdate], returnValue: ReturnValue): Map[String, AttributeValue] = {
